@@ -5,17 +5,39 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 const MODEL_ID = 'gemini-2.5-flash';
 
-// Helper to clean JSON string from Markdown code blocks
+// Robust JSON cleaner to extract valid JSON object from mixed text
 const cleanJsonString = (text: string): string => {
-  return text.replace(/```json/g, '').replace(/```/g, '').trim();
+  if (!text) return "{}";
+  
+  // 1. Remove Markdown code blocks if present
+  let cleaned = text.replace(/```json/g, '').replace(/```/g, '');
+  
+  // 2. Find the first '{' and the last '}'
+  const firstOpen = cleaned.indexOf('{');
+  const lastClose = cleaned.lastIndexOf('}');
+  
+  // 3. Extract the substring
+  if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+    cleaned = cleaned.substring(firstOpen, lastClose + 1);
+  }
+  
+  // 4. Remove any Google Search Reference IDs like [1], [2] which might appear in JSON strings
+  // CAUTION: Only safe to remove if they are outside of quoted strings, but for simplicity in this demo we assume
+  // valid JSON generation from Gemini won't embed them weirdly.
+  // Actually, standard Gemini JSON mode is usually clean. This is a fallback.
+  
+  return cleaned.trim();
 };
 
 // Define the expected structure for the AI to fill
 const DATA_STRUCTURE_PROMPT = `
-请严格按照以下 JSON 格式返回数据。不要包含任何 Markdown 格式化（如 \`\`\`json）。
-必须返回纯 JSON 字符串。所有文本内容必须使用中文。
+请严格按照以下 JSON 格式返回数据。
+重要原则：
+1. 必须返回纯 JSON 字符串，不要包含任何对话、前言或 Markdown 标记。
+2. 如果搜索不到某个具体数据，请基于行业常识进行**合理估算**，或者填入 0，**绝对不要**破坏 JSON 结构。
+3. 所有文本内容必须使用中文。
 
-JSON 结构要求：
+JSON 结构模板：
 {
   "ticker": "股票代码",
   "name": "公司名称",
@@ -41,7 +63,7 @@ JSON 结构要求：
     { "subject": "ESG评分", "A": 0-100评分, "B": 行业平均分(0-100), "fullMark": 100 }
   ],
   "trends": [
-    // 过去5年的数据，如果无法获取全部，请根据现有数据估算或填入最接近的数据
+    // 过去5年的数据，务必填满5项。如果缺少数据，请进行平滑估算。
     { "year": "2020", "revenue": 营收数值(亿), "netProfit": 净利润数值(亿), "cashFlow": 现金流数值(亿) },
     { "year": "2021", "revenue": 数值, "netProfit": 数值, "cashFlow": 数值 },
     { "year": "2022", "revenue": 数值, "netProfit": 数值, "cashFlow": 数值 },
@@ -63,12 +85,12 @@ JSON 结构要求：
 export const fetchCompanyData = async (query: string): Promise<CompanyData> => {
   try {
     const prompt = `
-      请搜索关于 "${query}" (股票代码或公司名) 的最新财务报告数据（优先使用2023年报或2024最新季报）。
+      请搜索关于 "${query}" (股票代码或公司名) 的最新财务报告数据。
       
       任务：
       1. 搜索该公司的最新财务核心指标、营收趋势、风险因素。
       2. 像一位专业的金融分析师一样，对数据进行结构化整理。
-      3. 估算 FinSight 评分 (0-100)，基于其财务健康状况。
+      3. 无论数据是否完整，都**必须**返回完整的 JSON 对象。如果某些具体年份的数据缺失，请根据最新数据进行合理的前向或后向估算，以确保图表能够展示。
       4. ${DATA_STRUCTURE_PROMPT}
     `;
 
@@ -77,24 +99,29 @@ export const fetchCompanyData = async (query: string): Promise<CompanyData> => {
       contents: prompt,
       config: {
         tools: [{ googleSearch: {} }],
-        temperature: 0.2, // Low temperature for more deterministic data extraction
+        temperature: 0.1, // Very low temperature to reduce creativity in JSON formatting
       }
     });
 
     const text = response.text || "";
+    console.log("Raw AI Response:", text); // Debugging
+    
     const jsonStr = cleanJsonString(text);
     
     // Attempt to parse
     try {
       const data = JSON.parse(jsonStr) as CompanyData;
-      // Ensure specific fields exist
-      if (!data.metrics || !data.ticker) {
-        throw new Error("Incomplete data generated");
+      
+      // Basic validation
+      if (!data.metrics || !data.dimensions || !data.trends) {
+        console.error("Missing fields in JSON:", data);
+        throw new Error("JSON 结构缺失关键字段");
       }
+      
       return data;
     } catch (parseError) {
-      console.error("JSON Parse Error:", parseError, "Raw Text:", text);
-      throw new Error("AI 无法生成有效的 JSON 数据，请重试。");
+      console.error("JSON Parse Error:", parseError, "Cleaned JSON:", jsonStr);
+      throw new Error("AI 数据生成格式错误，请稍后重试。");
     }
 
   } catch (error) {
@@ -114,7 +141,7 @@ export const parseFinancialFile = async (fileBase64: string, mimeType: string): 
       任务：
       1. 识别文档中的公司名称、年份。
       2. 提取资产负债表、利润表的关键数据。
-      3. 分析管理层讨论与分析 (MD&A) 部分的风险点。
+      3. 确保提取的数据足以填满下方的 JSON 结构。
       4. ${DATA_STRUCTURE_PROMPT}
     `;
 
@@ -141,7 +168,7 @@ export const parseFinancialFile = async (fileBase64: string, mimeType: string): 
       return data;
     } catch (parseError) {
       console.error("JSON Parse Error:", parseError, "Raw Text:", text);
-      throw new Error("AI 无法解析文件内容，可能是文件格式不支持或内容无法提取。");
+      throw new Error("AI 无法解析文件内容，请确保上传的是合法的财报文件。");
     }
 
   } catch (error) {

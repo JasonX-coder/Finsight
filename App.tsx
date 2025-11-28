@@ -105,15 +105,20 @@ export default function App() {
   };
 
   // Handlers
-  const handleSearch = async () => {
-    if(!query) return;
+  const handleSearch = async (overrideQuery?: string) => {
+    const searchTerm = overrideQuery || query;
+    if(!searchTerm) return;
+    
+    // Update state to match if overridden
+    if (overrideQuery) setQuery(overrideQuery);
+
     setLoading(true);
-    setLoadingText(`AI 正在全网搜索 "${query}" 的最新财务数据...`);
+    setLoadingText(`AI 正在全网搜索 "${searchTerm}" 的最新财务数据...`);
     setViewState(ViewState.ANALYZING);
     setErrorMsg(null);
     
     try {
-      const result = await fetchCompanyData(query);
+      const result = await fetchCompanyData(searchTerm);
       setData(result);
       setViewState(ViewState.DASHBOARD);
       
@@ -122,9 +127,9 @@ export default function App() {
         content: `我已经完成了对 ${result.name} (${result.ticker}) 的全网数据检索与分析。${result.summary} 您想深入了解哪个方面？`,
         timestamp: Date.now()
       }]);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setErrorMsg("数据获取失败：AI 未能找到有效的财务数据或生成格式有误，请尝试输入更准确的代码（如 'BABA', '600519'）。");
+      setErrorMsg(err.message || "数据获取失败：AI 未能找到有效的财务数据，请尝试输入更准确的代码（如 'BABA', '600519'）。");
       setViewState(ViewState.HOME);
     } finally {
       setLoading(false);
@@ -149,9 +154,9 @@ export default function App() {
         content: `已成功解析文件 "${file.name}"。\n基于文档内容，我提取了 ${result.name} 的关键财务指标。您可以随时询问文档中的具体细节。`,
         timestamp: Date.now()
       }]);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setErrorMsg("文档解析失败：请确保上传的是清晰的财报 PDF 或图片文件。");
+      setErrorMsg(err.message || "文档解析失败：请确保上传的是合法的财报 PDF 或图片文件。");
       setViewState(ViewState.HOME);
     } finally {
       setLoading(false);
@@ -261,8 +266,8 @@ export default function App() {
                   className="bg-transparent border-none outline-none text-sm w-full text-slate-200 placeholder-slate-500"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
-                        setQuery((e.target as HTMLInputElement).value);
-                        handleSearch();
+                        const val = (e.target as HTMLInputElement).value;
+                        handleSearch(val);
                         (e.target as HTMLInputElement).value = '';
                     }
                   }}
@@ -323,7 +328,7 @@ export default function App() {
                   />
                   <div className="absolute right-3 top-3">
                     <button 
-                      onClick={handleSearch}
+                      onClick={() => handleSearch()}
                       disabled={loading}
                       className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
                     >
@@ -358,9 +363,9 @@ export default function App() {
 
             <div className="flex flex-wrap justify-center gap-3 text-sm text-slate-500">
               <span>热门搜索:</span>
-              <span onClick={() => { setQuery("贵州茅台"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">贵州茅台</span>
-              <span onClick={() => { setQuery("NVDA"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">英伟达</span>
-              <span onClick={() => { setQuery("腾讯控股"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">腾讯控股</span>
+              <span onClick={() => { setQuery("贵州茅台"); handleSearch("贵州茅台"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">贵州茅台</span>
+              <span onClick={() => { setQuery("NVDA"); handleSearch("NVDA"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">英伟达</span>
+              <span onClick={() => { setQuery("腾讯控股"); handleSearch("腾讯控股"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">腾讯控股</span>
             </div>
           </div>
         )}
@@ -660,11 +665,11 @@ export default function App() {
                 </div>
                 <div className="space-y-2">
                    {preferences.customAlerts.map((alert) => (
-                     <div key={alert.id} className="flex items-center gap-2 bg-slate-950 p-2 rounded-lg border border-slate-800">
+                     <div key={alert.id} className="flex items-center gap-2 bg-slate-900 p-2 rounded-lg border border-slate-800">
                        <select 
                         value={alert.metricKey}
                         onChange={(e) => updateAlert(alert.id, 'metricKey', e.target.value)}
-                        className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-blue-500"
+                        className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-blue-500"
                        >
                          {Object.keys(data.metrics).map(k => (
                            <option key={k} value={k}>{data.metrics[k].label}</option>
@@ -674,7 +679,7 @@ export default function App() {
                        <select
                         value={alert.operator}
                         onChange={(e) => updateAlert(alert.id, 'operator', e.target.value)}
-                        className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-blue-500"
+                        className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-blue-500"
                        >
                          <option value="gt">大于</option>
                          <option value="lt">小于</option>
@@ -684,7 +689,7 @@ export default function App() {
                          type="number"
                          value={alert.value}
                          onChange={(e) => updateAlert(alert.id, 'value', parseFloat(e.target.value))}
-                         className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 w-20 outline-none focus:border-blue-500"
+                         className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 w-20 outline-none focus:border-blue-500"
                        />
                        
                        <div className="flex-1"></div>
