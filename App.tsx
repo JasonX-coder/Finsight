@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ViewState, CompanyData, RiskFlag, FinancialMetric, UserPreferences, ChatMessage, AlertConfig } from './types';
-import { MOCK_COMPANY_DATA, SAMPLE_PROMPTS, DEFAULT_PREFERENCES } from './constants';
-import { generateAIAnalysis } from './services/geminiService';
+import { SAMPLE_PROMPTS, DEFAULT_PREFERENCES } from './constants';
+import { generateAIAnalysis, fetchCompanyData, parseFinancialFile } from './services/geminiService';
 import { AnalysisRadarChart, FinancialTrendChart } from './components/Charts';
 import { IconSearch, IconUpload, IconAlert, IconSparkles, IconSettings, IconX, IconSend, IconPlus, IconTrash } from './components/Icons';
 
@@ -9,7 +9,9 @@ export default function App() {
   const [viewState, setViewState] = useState<ViewState>(ViewState.HOME);
   const [data, setData] = useState<CompanyData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState('正在初始化...');
   const [query, setQuery] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
   // Personalization State
   const [preferences, setPreferences] = useState<UserPreferences>(DEFAULT_PREFERENCES);
@@ -39,7 +41,6 @@ export default function App() {
     if (!data) return;
     
     const weights = preferences.weights;
-    // Explicitly cast to number[] to ensure type safety and avoid 'unknown' type errors
     const totalWeight = (Object.values(weights) as number[]).reduce((a, b) => a + b, 0);
     
     if (totalWeight === 0) {
@@ -66,7 +67,6 @@ export default function App() {
       const metric = data.metrics[alert.metricKey];
       if (!metric) return;
       
-      // Clean value (remove non-numeric chars for comparison if needed, but assuming number in types)
       const val = typeof metric.value === 'number' ? metric.value : parseFloat(String(metric.value).replace(/[^0-9.-]+/g, ''));
       
       const isTriggered = alert.operator === 'gt' ? val > alert.value : val < alert.value;
@@ -89,43 +89,73 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, aiThinking]);
 
-  // Handlers
-  const handleSearch = () => {
-    if(!query) return;
-    setLoading(true);
-    setViewState(ViewState.ANALYZING);
-    
-    // Simulate API Fetch/Parsing Delay
-    setTimeout(() => {
-      setData(MOCK_COMPANY_DATA);
-      setLoading(false);
-      setViewState(ViewState.DASHBOARD);
-      
-      // Initial AI Welcome Message
-      setChatMessages([{
-        role: 'ai',
-        content: `我已经分析了 ${MOCK_COMPANY_DATA.name}。该公司展现出卓越的增长，但目前的交易倍数较高。您想了解什么具体内容？`,
-        timestamp: Date.now()
-      }]);
-    }, 2500);
+  // Helper: Convert File to Base64
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        let encoded = reader.result as string;
+        // Remove data URL prefix (e.g. "data:application/pdf;base64,")
+        encoded = encoded.replace(/^data:.+;base64,/, '');
+        resolve(encoded);
+      };
+      reader.onerror = error => reject(error);
+    });
   };
 
-  const handleFileProcess = (file: File) => {
+  // Handlers
+  const handleSearch = async () => {
+    if(!query) return;
     setLoading(true);
+    setLoadingText(`AI 正在全网搜索 "${query}" 的最新财务数据...`);
     setViewState(ViewState.ANALYZING);
+    setErrorMsg(null);
     
-    // Simulate Parsing Delay
-    setTimeout(() => {
-      setData(MOCK_COMPANY_DATA);
-      setLoading(false);
+    try {
+      const result = await fetchCompanyData(query);
+      setData(result);
       setViewState(ViewState.DASHBOARD);
       
       setChatMessages([{
         role: 'ai',
-        content: `已成功解析文件 "${file.name}"。\n基于 ${MOCK_COMPANY_DATA.name} 的数据，我发现其毛利率显著提升，但现金流状况需要留意。您可以随时询问具体的财务细节。`,
+        content: `我已经完成了对 ${result.name} (${result.ticker}) 的全网数据检索与分析。${result.summary} 您想深入了解哪个方面？`,
         timestamp: Date.now()
       }]);
-    }, 2500);
+    } catch (err) {
+      console.error(err);
+      setErrorMsg("数据获取失败：AI 未能找到有效的财务数据或生成格式有误，请尝试输入更准确的代码（如 'BABA', '600519'）。");
+      setViewState(ViewState.HOME);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFileProcess = async (file: File) => {
+    setLoading(true);
+    setLoadingText(`AI 正在阅读文档 "${file.name}" 并提取财务表格...`);
+    setViewState(ViewState.ANALYZING);
+    setErrorMsg(null);
+    
+    try {
+      const base64 = await fileToBase64(file);
+      const result = await parseFinancialFile(base64, file.type);
+      
+      setData(result);
+      setViewState(ViewState.DASHBOARD);
+      
+      setChatMessages([{
+        role: 'ai',
+        content: `已成功解析文件 "${file.name}"。\n基于文档内容，我提取了 ${result.name} 的关键财务指标。您可以随时询问文档中的具体细节。`,
+        timestamp: Date.now()
+      }]);
+    } catch (err) {
+      console.error(err);
+      setErrorMsg("文档解析失败：请确保上传的是清晰的财报 PDF 或图片文件。");
+      setViewState(ViewState.HOME);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -164,8 +194,6 @@ export default function App() {
 
   const handlePromptClick = (prompt: string) => {
     setChatInput(prompt);
-    // Optional: auto-send
-    // handleSendMessage(); 
   };
 
   // --- Settings Modal Logic ---
@@ -231,6 +259,13 @@ export default function App() {
                   type="text" 
                   placeholder="搜索其他股票代码..." 
                   className="bg-transparent border-none outline-none text-sm w-full text-slate-200 placeholder-slate-500"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                        setQuery((e.target as HTMLInputElement).value);
+                        handleSearch();
+                        (e.target as HTMLInputElement).value = '';
+                    }
+                  }}
                 />
              </div>
           )}
@@ -246,7 +281,7 @@ export default function App() {
               </button>
             )}
             <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-medium">
-              JD
+              用户
             </div>
           </div>
         </div>
@@ -255,6 +290,14 @@ export default function App() {
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
         
+        {/* Error Message */}
+        {errorMsg && (
+          <div className="mb-6 p-4 bg-rose-900/20 border border-rose-500/50 rounded-xl text-rose-200 flex items-center gap-3 animate-fade-in">
+            <IconAlert className="w-5 h-5" />
+            {errorMsg}
+          </div>
+        )}
+
         {/* HOME VIEW */}
         {viewState === ViewState.HOME && (
           <div className="max-w-3xl mx-auto mt-20 text-center space-y-8 animate-fade-in-up">
@@ -263,7 +306,7 @@ export default function App() {
                 一眼看穿财报，<br/>十秒读懂公司。
               </h1>
               <p className="text-xl text-slate-400 max-w-2xl mx-auto">
-                AI 驱动的年报深度分析。将 200 页复杂的财务报告转化为关键洞察。支持个性化评分模型与实时 AI 深度问答。
+                基于真实数据，AI 驱动的年报深度分析。支持全球股票代码实时检索与 PDF 财报智能解析。
               </p>
             </div>
 
@@ -275,15 +318,16 @@ export default function App() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                    placeholder="输入股票代码 (如: 600519, NVDA, 腾讯)..." 
+                    placeholder="输入股票代码或名称 (如: 00700, AAPL, 贵州茅台)..." 
                     className="w-full bg-slate-900 border border-slate-800 rounded-lg px-5 py-4 text-lg outline-none focus:ring-2 focus:ring-blue-500 transition-all placeholder-slate-600"
                   />
                   <div className="absolute right-3 top-3">
                     <button 
                       onClick={handleSearch}
-                      className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md font-medium transition-colors flex items-center gap-2"
+                      disabled={loading}
+                      className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
                     >
-                      开始分析 <IconSearch className="w-4 h-4" />
+                      {loading ? '搜索中...' : '开始分析'} <IconSearch className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -295,16 +339,17 @@ export default function App() {
                       ref={fileInputRef}
                       onChange={handleFileChange}
                       className="hidden"
-                      accept=".pdf"
+                      accept=".pdf,application/pdf,image/*"
                     />
                     <button 
                       onClick={() => fileInputRef.current?.click()}
                       onDrop={handleDrop}
                       onDragOver={handleDragOver}
-                      className="flex items-center gap-2 text-slate-400 hover:text-blue-400 transition-colors border border-dashed border-slate-700 hover:border-blue-500 rounded-lg px-8 py-6 w-full justify-center group"
+                      disabled={loading}
+                      className="flex items-center gap-2 text-slate-400 hover:text-blue-400 transition-colors border border-dashed border-slate-700 hover:border-blue-500 rounded-lg px-8 py-6 w-full justify-center group disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <IconUpload className="w-6 h-6 group-hover:scale-110 transition-transform" />
-                      <span>点击或拖拽上传财报 PDF 文件</span>
+                      <span>点击或拖拽上传财报 PDF/图片文件</span>
                     </button>
                   </div>
                 </div>
@@ -313,9 +358,9 @@ export default function App() {
 
             <div className="flex flex-wrap justify-center gap-3 text-sm text-slate-500">
               <span>热门搜索:</span>
-              <span className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">贵州茅台</span>
-              <span className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">英伟达</span>
-              <span className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">阿里巴巴</span>
+              <span onClick={() => { setQuery("贵州茅台"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">贵州茅台</span>
+              <span onClick={() => { setQuery("NVDA"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">英伟达</span>
+              <span onClick={() => { setQuery("腾讯控股"); }} className="cursor-pointer hover:text-blue-400 transition-colors bg-slate-900 px-2 py-1 rounded border border-slate-800">腾讯控股</span>
             </div>
           </div>
         )}
@@ -329,8 +374,8 @@ export default function App() {
               <IconSparkles className="absolute inset-0 m-auto w-8 h-8 text-blue-400 animate-pulse" />
             </div>
             <div className="text-center space-y-2">
-              <h3 className="text-2xl font-bold text-white">正在解析财务结构...</h3>
-              <p className="text-slate-400">正在通过 AI 提取表格数据、审计附注并计算关键财务比率。</p>
+              <h3 className="text-2xl font-bold text-white">AI 正在深度分析中...</h3>
+              <p className="text-slate-400 animate-pulse">{loadingText}</p>
             </div>
             <div className="w-64 h-1 bg-slate-800 rounded-full overflow-hidden">
                <div className="h-full bg-blue-500 animate-progress origin-left"></div>
@@ -368,7 +413,7 @@ export default function App() {
                     <span className="text-xl text-slate-500 mb-2">/100</span>
                   </div>
                   <p className="text-sm text-slate-400 mt-2">
-                    行业排名前 1%。基于您的个性化模型权重计算。
+                    基于 AI 对财务健康状况的综合评分。
                   </p>
                 </div>
               </div>
@@ -385,7 +430,7 @@ export default function App() {
               <div className="grid grid-cols-2 gap-4">
                 {activeMetricsList.map((metric, idx) => (
                   <div key={idx} className="bg-slate-900 border border-slate-800 rounded-xl p-4 transition-all hover:bg-slate-800/50">
-                    <p className="text-xs text-slate-500 uppercase">{metric.label}</p>
+                    <p className="text-xs text-slate-500 uppercase truncate" title={metric.label}>{metric.label}</p>
                     <div className="flex items-baseline gap-1 mt-1">
                       <span className="text-xl font-bold text-white">{metric.value}</span>
                       <span className="text-xs text-slate-400">{metric.unit}</span>
@@ -411,7 +456,7 @@ export default function App() {
               {/* Financial Trends */}
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 h-[320px]">
                 <div className="flex justify-between items-center mb-6">
-                   <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">业绩趋势</h3>
+                   <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">业绩趋势 (近5年)</h3>
                    <div className="flex gap-2">
                       <div className="flex items-center gap-1 text-xs text-slate-400"><div className="w-2 h-2 rounded-full bg-blue-500"></div>营收</div>
                       <div className="flex items-center gap-1 text-xs text-slate-400"><div className="w-2 h-2 rounded-full bg-emerald-500"></div>净利</div>
@@ -478,7 +523,7 @@ export default function App() {
                       onChange={(e) => setChatInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
                       placeholder="询问关于毛利率、风险点或战略方向的问题..." 
-                      className="w-full bg-slate-950 border border-slate-700 rounded-full pl-5 pr-12 py-3 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-full pl-5 pr-12 py-3 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                     <button 
                       onClick={handleSendMessage}
